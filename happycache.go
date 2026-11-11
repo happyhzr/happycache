@@ -20,6 +20,7 @@ type Group struct {
 	name      string
 	getter    Getter
 	mainCache *cache
+	peers     PeerPicker
 }
 
 var mu sync.RWMutex
@@ -60,7 +61,25 @@ func (g *Group) Get(key string) (*ByteView, error) {
 }
 
 func (g *Group) load(key string) (*ByteView, error) {
+	if g.peers != nil {
+		peer, ok := g.peers.PickPeer(key)
+		if ok {
+			value, err := g.getFromPeer(peer, key)
+			if err == nil {
+				return value, nil
+			}
+			log.Println("[happycache] failed to get from peer", err)
+		}
+	}
 	return g.getLocally(key)
+}
+
+func (g *Group) getFromPeer(peer PeerGetter, key string) (*ByteView, error) {
+	bytes, err := peer.Get(g.name, key)
+	if err != nil {
+		return nil, err
+	}
+	return &ByteView{b: bytes}, nil
 }
 
 func (g *Group) getLocally(key string) (*ByteView, error) {
@@ -75,4 +94,11 @@ func (g *Group) getLocally(key string) (*ByteView, error) {
 
 func (g *Group) populateCache(key string, value *ByteView) {
 	g.mainCache.add(key, value)
+}
+
+func (g *Group) RegisterPeers(peers PeerPicker) {
+	if g.peers != nil {
+		panic("registerPeerPick called more than once")
+	}
+	g.peers = peers
 }
