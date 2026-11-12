@@ -4,6 +4,8 @@ import (
 	"errors"
 	"log"
 	"sync"
+
+	"github.com/happyhzr/happycache/singleflight"
 )
 
 type Getter interface {
@@ -21,6 +23,7 @@ type Group struct {
 	getter    Getter
 	mainCache *cache
 	peers     PeerPicker
+	loader    *singleflight.Group
 }
 
 var mu sync.RWMutex
@@ -36,6 +39,7 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 		name:      name,
 		getter:    getter,
 		mainCache: &cache{cacheBytes: cacheBytes},
+		loader:    &singleflight.Group{},
 	}
 	groups[name] = g
 	return g
@@ -61,17 +65,23 @@ func (g *Group) Get(key string) (*ByteView, error) {
 }
 
 func (g *Group) load(key string) (*ByteView, error) {
-	if g.peers != nil {
-		peer, ok := g.peers.PickPeer(key)
-		if ok {
-			value, err := g.getFromPeer(peer, key)
-			if err == nil {
-				return value, nil
+	view, err := g.loader.Do(key, func() (any, error) {
+		if g.peers != nil {
+			peer, ok := g.peers.PickPeer(key)
+			if ok {
+				value, err := g.getFromPeer(peer, key)
+				if err == nil {
+					return value, nil
+				}
+				log.Println("[happycache] failed to get from peer", err)
 			}
-			log.Println("[happycache] failed to get from peer", err)
 		}
+		return g.getLocally(key)
+	})
+	if err == nil {
+		return view.(*ByteView), nil
 	}
-	return g.getLocally(key)
+	return nil, err
 }
 
 func (g *Group) getFromPeer(peer PeerGetter, key string) (*ByteView, error) {
